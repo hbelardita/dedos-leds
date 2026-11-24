@@ -5,42 +5,102 @@ import { FilesetResolver, HandLandmarker } from 'https://cdn.jsdelivr.net/npm/@m
 const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/wasm';
 const MODELO_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const PARES_DEDOS = [[8, 6], [12, 10], [16, 14], [20, 18]];
-const NOMBRES_LEDS = ['azul', 'blanco', 'rojo', 'blanco', 'azul'];
+const CONEXIONES_MANO = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+const LEDS_CONFIG = [
+  { pin: 2, nombre: 'azul' },
+  { pin: 3, nombre: 'blanco' },
+  { pin: 4, nombre: 'rojo' },
+  { pin: 5, nombre: 'blanco' },
+  { pin: 6, nombre: 'azul' },
+];
 const FRAMES_ESTABLES = 4;
 
-const camara = { activa: false, detector: null, ultimoTiempoVideo: -1 };
-const estabilizador = { candidato: null, framesSeguidos: 0, estable: null };
-const arduino = { puerto: null, escritor: null, listo: false, ultimoEnviado: null, timerReinicio: null };
+const camara = {
+  fase: 'apagada', // 'apagada' | 'permiso' | 'cargando' | 'activa' | 'error'
+  stream: null,
+  detector: null,
+  ultimoTiempoVideo: -1,
+  intentoId: 0,
+  rafId: null,
+};
+
+const estabilizador = {
+  candidato: null,
+  framesSeguidos: 0,
+  estable: null,
+  ultimoAnunciado: undefined,
+};
+
+const arduino = {
+  soportado: 'serial' in navigator,
+  puerto: null,
+  escritor: null,
+  conectando: false,
+  listo: false,
+  ultimoEnviado: null,
+  timerReinicio: null,
+  error: null,
+};
 
 // Referencias del DOM
+const elEscenario = document.getElementById('escenario');
 const elVideo = document.getElementById('video');
+const elCapaMano = document.getElementById('capa-mano');
+const ctxMano = elCapaMano.getContext('2d');
 const elMarcadorCamara = document.getElementById('marcador-camara');
-const elEstado = document.getElementById('estado');
+const elInicioTitulo = document.getElementById('inicio-titulo');
+const elInicioDescripcion = document.getElementById('inicio-descripcion');
+const elCapaCarga = document.getElementById('capa-carga');
+const elCargaTexto = document.getElementById('carga-texto');
+const elAvisoDeteccion = document.getElementById('aviso-deteccion');
+const elEstadoHardware = document.getElementById('estado-hardware');
+const elEstadoHardwareTexto = document.getElementById('estado-hardware-texto');
+const elConteoInsignia = document.getElementById('conteo-insignia');
 const elConteoNumero = document.getElementById('conteo-numero');
-const elLeds = Array.from(document.querySelectorAll('#fila-leds .led'));
+const elConteoEtiqueta = document.getElementById('conteo-etiqueta');
+const elAnuncioConteo = document.getElementById('anuncio-conteo');
+const elUnidadesLed = Array.from(document.querySelectorAll('#fila-leds .led-unidad'));
 const btnCamara = document.getElementById('btn-camara');
+const btnCamaraTexto = btnCamara.querySelector('.boton-texto');
+const btnCamaraEscenario = document.getElementById('btn-camara-escenario');
+const btnCamaraEscenarioTexto = btnCamaraEscenario.querySelector('.boton-texto');
+const btnCancelarCarga = document.getElementById('btn-cancelar-carga');
 const btnArduino = document.getElementById('btn-arduino');
+const btnArduinoTexto = btnArduino.querySelector('.boton-texto');
+const btnPantalla = document.getElementById('btn-pantalla');
 
-// --- Lógica pura ---
+// --- Lógica pura de detección ---
 
-// Cuenta dedos levantados (0..5) según los 21 puntos de la mano y lateralidad.
-function contarDedos(landmarks, mano) {
+function analizarDedos(landmarks, mano) {
+  const puntasActivas = new Set();
   let total = 0;
+
   for (const [punta, media] of PARES_DEDOS) {
     if (landmarks[punta].y < landmarks[media].y) {
       total += 1;
+      puntasActivas.add(punta);
     }
   }
+
   const pulgarArriba = mano === 'Right'
     ? landmarks[4].x > landmarks[3].x
     : landmarks[4].x < landmarks[3].x;
+
   if (pulgarArriba) {
     total += 1;
+    puntasActivas.add(4);
   }
-  return total;
+
+  return { total, puntasActivas };
 }
 
-// Filtra parpadeos exigiendo FRAMES_ESTABLES frames iguales seguidos.
 function estabilizarConteo(valorCrudo) {
   if (valorCrudo === estabilizador.candidato) {
     estabilizador.framesSeguidos += 1;
@@ -48,60 +108,255 @@ function estabilizarConteo(valorCrudo) {
     estabilizador.candidato = valorCrudo;
     estabilizador.framesSeguidos = 1;
   }
+
   if (estabilizador.framesSeguidos >= FRAMES_ESTABLES) {
     estabilizador.estable = estabilizador.candidato;
   }
+
   return estabilizador.estable;
 }
 
-// --- Renderizado de interfaz ---
+function reiniciarEstabilizador() {
+  estabilizador.candidato = null;
+  estabilizador.framesSeguidos = 0;
+  estabilizador.estable = null;
+  estabilizador.ultimoAnunciado = undefined;
+}
 
-// Actualiza la barra de estado solo cuando el texto cambia.
-function actualizarEstado(texto) {
-  if (elEstado.textContent !== texto) {
-    elEstado.textContent = texto;
+// --- Dibujo de puntos de mano sobre el video ---
+
+function limpiarCapaMano() {
+  if (!ctxMano) return;
+  ctxMano.clearRect(0, 0, elCapaMano.width, elCapaMano.height);
+}
+
+function sincronizarTamanoCanvas() {
+  const rect = elEscenario.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const ancho = Math.max(1, Math.round(rect.width * dpr));
+  const alto = Math.max(1, Math.round(rect.height * dpr));
+  if (elCapaMano.width !== ancho || elCapaMano.height !== alto) {
+    elCapaMano.width = ancho;
+    elCapaMano.height = alto;
+  }
+  return { ancho: rect.width, alto: rect.height, dpr };
+}
+
+function dibujarMano(landmarks, puntasActivas) {
+  if (!ctxMano) return;
+  const { ancho, alto, dpr } = sincronizarTamanoCanvas();
+  ctxMano.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctxMano.clearRect(0, 0, ancho, alto);
+
+  if (!landmarks || !elVideo.videoWidth || !elVideo.videoHeight) {
+    return;
+  }
+
+  const escala = Math.max(ancho / elVideo.videoWidth, alto / elVideo.videoHeight);
+  const videoRenderW = elVideo.videoWidth * escala;
+  const videoRenderH = elVideo.videoHeight * escala;
+  const offsetX = (ancho - videoRenderW) / 2;
+  const offsetY = (alto - videoRenderH) / 2;
+
+  const proyectar = (punto) => ({
+    x: offsetX + (1 - punto.x) * videoRenderW,
+    y: offsetY + punto.y * videoRenderH,
+  });
+
+  const puntos = landmarks.map(proyectar);
+
+  ctxMano.lineWidth = 2;
+  ctxMano.strokeStyle = 'rgba(243, 245, 248, 0.42)';
+  ctxMano.beginPath();
+  for (const [a, b] of CONEXIONES_MANO) {
+    ctxMano.moveTo(puntos[a].x, puntos[a].y);
+    ctxMano.lineTo(puntos[b].x, puntos[b].y);
+  }
+  ctxMano.stroke();
+
+  for (let i = 0; i < puntos.length; i++) {
+    const p = puntos[i];
+    const esPuntaActiva = puntasActivas.has(i);
+    ctxMano.beginPath();
+    ctxMano.arc(p.x, p.y, esPuntaActiva ? 6.5 : 3, 0, Math.PI * 2);
+    if (esPuntaActiva) {
+      ctxMano.fillStyle = '#60a5fa';
+      ctxMano.fill();
+      ctxMano.lineWidth = 2;
+      ctxMano.strokeStyle = '#ffffff';
+      ctxMano.stroke();
+    } else {
+      ctxMano.fillStyle = 'rgba(243, 245, 248, 0.72)';
+      ctxMano.fill();
+    }
   }
 }
 
-function renderizarConteo(estable) {
-  elConteoNumero.textContent = estable === null ? '—' : String(estable);
-  const encendidos = estable ?? 0;
-  elLeds.forEach((led, indice) => {
-    const activo = indice < encendidos;
-    const estadoTexto = activo ? 'encendido' : 'apagado';
-    led.dataset.active = String(activo);
-    led.setAttribute('aria-label', `LED ${indice + 1} ${NOMBRES_LEDS[indice]} ${estadoTexto}`);
-  });
-}
-
-// --- Arduino por Web Serial ---
+// --- Renderizado de estado (hardware y detección desacoplados) ---
 
 function arduinoIniciando() {
   return Boolean(arduino.puerto && !arduino.listo);
 }
 
-function estadoSimulado() {
-  return 'serial' in navigator
-    ? 'Modo simulado (sin Arduino conectado)'
-    : 'Web Serial solo funciona en Chrome o Edge (modo simulado)';
+function renderizarHardware() {
+  let nivel = 'simulado';
+  let texto = 'Modo simulado';
+
+  if (arduino.error) {
+    nivel = 'error';
+    texto = arduino.error;
+  } else if (arduino.conectando) {
+    nivel = 'iniciando';
+    texto = 'Conectando Arduino…';
+  } else if (arduinoIniciando()) {
+    nivel = 'iniciando';
+    texto = 'Reiniciando Arduino (2 s)…';
+  } else if (arduino.listo) {
+    nivel = 'conectado';
+    texto = 'Arduino conectado';
+  } else if (!arduino.soportado) {
+    nivel = 'no-soportado';
+    texto = 'Modo simulado · USB disponible en Chrome o Edge';
+  }
+
+  elEstadoHardware.dataset.nivel = nivel;
+  if (elEstadoHardwareTexto.textContent !== texto) {
+    elEstadoHardwareTexto.textContent = texto;
+  }
+
+  if (!arduino.soportado) {
+    btnArduino.disabled = true;
+    btnArduino.setAttribute('aria-disabled', 'true');
+    btnArduino.title = 'Web Serial solo funciona en Chrome o Edge';
+    btnArduinoTexto.textContent = 'Arduino (Chrome/Edge)';
+  } else if (arduino.conectando) {
+    btnArduino.disabled = true;
+    btnArduino.setAttribute('aria-busy', 'true');
+    btnArduinoTexto.textContent = 'Conectando…';
+  } else if (arduino.puerto) {
+    btnArduino.disabled = false;
+    btnArduino.removeAttribute('aria-busy');
+    btnArduino.title = '';
+    btnArduinoTexto.textContent = 'Desconectar Arduino';
+  } else {
+    btnArduino.disabled = false;
+    btnArduino.removeAttribute('aria-busy');
+    btnArduino.title = '';
+    btnArduinoTexto.textContent = 'Conectar Arduino';
+  }
+
+  renderizarAvisoEscenario();
 }
 
-function estadoConexion() {
+function renderizarAvisoEscenario() {
+  if (camara.fase !== 'activa') {
+    elAvisoDeteccion.hidden = true;
+    return;
+  }
+
   if (arduinoIniciando()) {
-    return 'Arduino conectado (iniciando...)';
+    elAvisoDeteccion.textContent = 'Sincronizando Arduino (2 s)…';
+    elAvisoDeteccion.hidden = false;
+    return;
   }
-  if (arduino.listo) {
-    return 'Arduino conectado';
+
+  if (estabilizador.estable === null) {
+    elAvisoDeteccion.textContent = 'Mostrá una mano abierta frente a la cámara';
+    elAvisoDeteccion.hidden = false;
+    return;
   }
-  return estadoSimulado();
+
+  elAvisoDeteccion.hidden = true;
 }
 
-function estadoDeteccion(estable) {
-  if (estable === null && !arduinoIniciando()) {
-    return 'Sin mano detectada';
+function renderizarEscenario(mensajeError = null) {
+  elEscenario.dataset.fase = camara.fase;
+
+  const cargando = camara.fase === 'permiso' || camara.fase === 'cargando';
+  const activa = camara.fase === 'activa';
+
+  elMarcadorCamara.hidden = activa || cargando;
+  elCapaCarga.hidden = !cargando;
+  elConteoInsignia.hidden = !activa;
+
+  if (camara.fase === 'permiso') {
+    elCargaTexto.textContent = 'Solicitando permiso de cámara…';
+  } else if (camara.fase === 'cargando') {
+    elCargaTexto.textContent = 'Preparando detector de manos…';
   }
-  return estadoConexion();
+
+  if (camara.fase === 'apagada') {
+    elInicioTitulo.textContent = 'Mostrá tu mano para encender los 5 LEDs';
+    elInicioDescripcion.textContent = 'Levantá de 0 a 5 dedos frente a la cámara. Funciona en modo simulado o conectado a un Arduino Uno por USB.';
+    btnCamaraEscenarioTexto.textContent = 'Iniciar cámara';
+  } else if (camara.fase === 'error' && mensajeError) {
+    elInicioTitulo.textContent = mensajeError.titulo;
+    elInicioDescripcion.textContent = mensajeError.detalle;
+    btnCamaraEscenarioTexto.textContent = 'Reintentar';
+  }
+
+  btnCamara.disabled = cargando;
+  btnCamaraEscenario.disabled = cargando;
+
+  if (cargando) {
+    btnCamara.setAttribute('aria-busy', 'true');
+    btnCamaraTexto.textContent = 'Preparando…';
+  } else if (activa) {
+    btnCamara.removeAttribute('aria-busy');
+    btnCamaraTexto.textContent = 'Detener cámara';
+  } else {
+    btnCamara.removeAttribute('aria-busy');
+    btnCamaraTexto.textContent = 'Iniciar cámara';
+  }
+
+  renderizarAvisoEscenario();
 }
+
+function anunciarConteo(estable) {
+  if (estabilizador.ultimoAnunciado === estable) return;
+  estabilizador.ultimoAnunciado = estable;
+
+  if (estable === null) {
+    elAnuncioConteo.textContent = 'Sin mano en pantalla';
+  } else if (estable === 0) {
+    elAnuncioConteo.textContent = '0 dedos, todos los LEDs apagados';
+  } else if (estable === 1) {
+    elAnuncioConteo.textContent = '1 dedo, 1 LED encendido';
+  } else {
+    elAnuncioConteo.textContent = `${estable} dedos, ${estable} LEDs encendidos`;
+  }
+}
+
+function renderizarConteo(estable) {
+  const encendidos = estable ?? 0;
+
+  if (estable === null) {
+    elConteoNumero.textContent = '0';
+    elConteoEtiqueta.textContent = 'listo';
+  } else {
+    elConteoNumero.textContent = String(estable);
+    elConteoEtiqueta.textContent = estable === 1 ? 'dedo' : 'dedos';
+  }
+
+  elUnidadesLed.forEach((unidad, indice) => {
+    const activo = indice < encendidos;
+    const svg = unidad.querySelector('.led');
+    const info = LEDS_CONFIG[indice];
+    const estadoTexto = activo ? 'encendido' : 'apagado';
+    unidad.dataset.active = String(activo);
+    if (svg) {
+      svg.dataset.active = String(activo);
+      svg.setAttribute('aria-label', `LED ${indice + 1} pin ${info.pin} ${info.nombre} ${estadoTexto}`);
+    }
+  });
+
+  if (camara.fase === 'activa') {
+    anunciarConteo(estable);
+  }
+  renderizarAvisoEscenario();
+}
+
+// --- Arduino por Web Serial ---
 
 async function enviarArduino(cantidad) {
   if (!arduino.escritor || !arduino.listo) return;
@@ -110,11 +365,11 @@ async function enviarArduino(cantidad) {
   try {
     await arduino.escritor.write(new Uint8Array([48 + cantidad]));
   } catch {
-    await desconectarArduino();
+    await desconectarArduino('Se perdió la conexión USB con el Arduino.');
   }
 }
 
-async function desconectarArduino() {
+async function desconectarArduino(mensajeError = null) {
   if (arduino.timerReinicio !== null) {
     clearTimeout(arduino.timerReinicio);
     arduino.timerReinicio = null;
@@ -123,11 +378,13 @@ async function desconectarArduino() {
   const { escritor, puerto } = arduino;
   arduino.escritor = null;
   arduino.puerto = null;
+  arduino.conectando = false;
   arduino.listo = false;
   arduino.ultimoEnviado = null;
+  arduino.error = mensajeError;
 
   if (puerto) {
-    puerto.removeEventListener('disconnect', desconectarArduino);
+    puerto.removeEventListener('disconnect', manejarDesconexionPuerto);
   }
   if (escritor) {
     try {
@@ -144,19 +401,25 @@ async function desconectarArduino() {
     }
   }
 
-  btnArduino.textContent = 'Conectar Arduino';
-  actualizarEstado(estadoSimulado());
+  renderizarHardware();
+}
+
+function manejarDesconexionPuerto() {
+  desconectarArduino('Arduino desconectado. Volvió a modo simulado.');
 }
 
 async function conectarArduino() {
-  if (!('serial' in navigator)) {
-    actualizarEstado(estadoSimulado());
+  if (!arduino.soportado || arduino.conectando) {
     return;
   }
   if (arduino.puerto) {
-    await desconectarArduino();
+    await desconectarArduino(null);
     return;
   }
+
+  arduino.error = null;
+  arduino.conectando = true;
+  renderizarHardware();
 
   try {
     const puerto = await navigator.serial.requestPort();
@@ -165,26 +428,27 @@ async function conectarArduino() {
 
     arduino.puerto = puerto;
     arduino.escritor = escritor;
+    arduino.conectando = false;
     arduino.listo = false;
     arduino.ultimoEnviado = null;
 
-    puerto.addEventListener('disconnect', desconectarArduino);
-    btnArduino.textContent = 'Desconectar Arduino';
-    actualizarEstado('Arduino conectado (iniciando...)');
+    puerto.addEventListener('disconnect', manejarDesconexionPuerto);
+    renderizarHardware();
 
     // El Arduino Uno se reinicia al abrir el puerto serial (~2 s).
     arduino.timerReinicio = setTimeout(() => {
       arduino.timerReinicio = null;
       arduino.listo = true;
-      actualizarEstado('Arduino conectado');
+      renderizarHardware();
       enviarArduino(estabilizador.estable ?? 0);
     }, 2000);
   } catch (err) {
+    arduino.conectando = false;
     if (err?.name === 'NotFoundError') {
+      renderizarHardware();
       return;
     }
-    await desconectarArduino();
-    actualizarEstado('No se pudo conectar con el Arduino. Verificá el cable USB.');
+    await desconectarArduino('No se pudo conectar el Arduino. Verificá el cable USB.');
   }
 }
 
@@ -207,57 +471,121 @@ async function crearDetector() {
   }
 }
 
-async function iniciarCamara() {
-  if (camara.activa) return;
-
-  if (!navigator.mediaDevices?.getUserMedia) {
-    actualizarEstado('Tu navegador no permite acceder a la cámara.');
-    return;
-  }
-
-  try {
-    actualizarEstado('Solicitando acceso a la cámara...');
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-    });
-    elVideo.srcObject = stream;
-    await elVideo.play();
-    elMarcadorCamara.hidden = true;
-
-    if (!camara.detector) {
-      actualizarEstado('Cargando detector de manos...');
-      camara.detector = await crearDetector();
-    }
-
-    camara.activa = true;
-    camara.ultimoTiempoVideo = -1;
-    btnCamara.textContent = 'Detener cámara';
-    actualizarEstado(estadoDeteccion(estabilizador.estable));
-    requestAnimationFrame(buclePrincipal);
-  } catch {
-    detenerCamara();
-    actualizarEstado('No se pudo iniciar la cámara. Revisá los permisos o conectá una cámara.');
-  }
-}
-
-function detenerCamara() {
-  const stream = elVideo.srcObject;
+function detenerPistasVideo() {
+  const stream = camara.stream || elVideo.srcObject;
   if (stream) {
     for (const pista of stream.getTracks()) {
       pista.stop();
     }
-    elVideo.srcObject = null;
   }
-  camara.activa = false;
+  camara.stream = null;
+  elVideo.srcObject = null;
+}
+
+function detenerCamara({ faseFinal = 'apagada', mensajeError = null } = {}) {
+  camara.intentoId += 1;
+  if (camara.rafId !== null) {
+    cancelAnimationFrame(camara.rafId);
+    camara.rafId = null;
+  }
+  detenerPistasVideo();
+  camara.fase = faseFinal;
   camara.ultimoTiempoVideo = -1;
-  estabilizador.candidato = null;
-  estabilizador.framesSeguidos = 0;
-  estabilizador.estable = null;
-  elMarcadorCamara.hidden = false;
-  btnCamara.textContent = 'Iniciar cámara';
+  reiniciarEstabilizador();
+  limpiarCapaMano();
   renderizarConteo(null);
   enviarArduino(0);
-  actualizarEstado(estadoConexion());
+  renderizarEscenario(mensajeError);
+}
+
+async function iniciarCamara() {
+  if (camara.fase === 'permiso' || camara.fase === 'cargando' || camara.fase === 'activa') {
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    detenerCamara({
+      faseFinal: 'error',
+      mensajeError: {
+        titulo: 'Cámara no disponible en este navegador',
+        detalle: 'Abrí esta página desde un navegador compatible con cámara (como Chrome o Edge) en conexión segura.',
+      },
+    });
+    return;
+  }
+
+  const intento = ++camara.intentoId;
+  camara.fase = 'permiso';
+  renderizarEscenario();
+
+  // Paso 1: solicitar cámara (errores de permiso o hardware)
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+    });
+  } catch {
+    if (intento !== camara.intentoId) return;
+    detenerCamara({
+      faseFinal: 'error',
+      mensajeError: {
+        titulo: 'No se pudo acceder a la cámara',
+        detalle: 'Revisá los permisos del navegador o verificá que la cámara esté conectada y libre.',
+      },
+    });
+    return;
+  }
+
+  if (intento !== camara.intentoId) {
+    for (const pista of stream.getTracks()) pista.stop();
+    return;
+  }
+
+  camara.stream = stream;
+  elVideo.srcObject = stream;
+  try {
+    await elVideo.play();
+  } catch {
+    if (intento !== camara.intentoId) return;
+    detenerCamara({
+      faseFinal: 'error',
+      mensajeError: {
+        titulo: 'No se pudo reproducir el video',
+        detalle: 'Intentá iniciar la cámara nuevamente o elegí otra cámara en la configuración del navegador.',
+      },
+    });
+    return;
+  }
+
+  // Paso 2: cargar modelo MediaPipe (errores de red/WASM separados de cámara)
+  if (!camara.detector) {
+    camara.fase = 'cargando';
+    renderizarEscenario();
+    try {
+      const detector = await crearDetector();
+      if (intento !== camara.intentoId) return;
+      camara.detector = detector;
+    } catch {
+      if (intento !== camara.intentoId) return;
+      detenerCamara({
+        faseFinal: 'error',
+        mensajeError: {
+          titulo: 'No se pudo cargar el detector de manos',
+          detalle: 'La cámara funciona, pero falló la descarga del modelo. Verificá la conexión a internet y presioná Reintentar.',
+        },
+      });
+      return;
+    }
+  }
+
+  if (intento !== camara.intentoId) return;
+
+  camara.fase = 'activa';
+  camara.ultimoTiempoVideo = -1;
+  reiniciarEstabilizador();
+  renderizarEscenario();
+  renderizarConteo(null);
+  camara.rafId = requestAnimationFrame(buclePrincipal);
 }
 
 function hayFrameNuevo() {
@@ -266,41 +594,85 @@ function hayFrameNuevo() {
     && elVideo.currentTime !== camara.ultimoTiempoVideo;
 }
 
-function detectarDedos(ahoraMs) {
+function detectarMano(ahoraMs) {
   const resultado = camara.detector.detectForVideo(elVideo, ahoraMs);
   const landmarks = resultado.landmarks?.[0];
-  if (!landmarks) return null;
+  if (!landmarks) {
+    return { conteo: null, landmarks: null, puntasActivas: null };
+  }
   const mano = resultado.handedness?.[0]?.[0]?.categoryName || 'Right';
-  return contarDedos(landmarks, mano);
+  const { total, puntasActivas } = analizarDedos(landmarks, mano);
+  return { conteo: total, landmarks, puntasActivas };
 }
 
 function procesarFrame(ahoraMs) {
   camara.ultimoTiempoVideo = elVideo.currentTime;
-  const estable = estabilizarConteo(detectarDedos(ahoraMs));
-  actualizarEstado(estadoDeteccion(estable));
+  const { conteo, landmarks, puntasActivas } = detectarMano(ahoraMs);
+  dibujarMano(landmarks, puntasActivas);
+  const estable = estabilizarConteo(conteo);
   renderizarConteo(estable);
   enviarArduino(estable ?? 0);
 }
 
 function buclePrincipal(ahoraMs) {
-  if (!camara.activa) return;
+  if (camara.fase !== 'activa') {
+    camara.rafId = null;
+    return;
+  }
   if (hayFrameNuevo()) {
     procesarFrame(ahoraMs);
   }
-  requestAnimationFrame(buclePrincipal);
+  camara.rafId = requestAnimationFrame(buclePrincipal);
+}
+
+// --- Controles auxiliares (Pantalla completa) ---
+
+function actualizarBotonPantalla() {
+  const activo = document.fullscreenElement === elEscenario;
+  btnPantalla.setAttribute('aria-label', activo ? 'Salir de pantalla completa' : 'Activar pantalla completa');
+  btnPantalla.title = activo ? 'Salir de pantalla completa' : 'Pantalla completa';
+}
+
+async function alternarPantallaCompleta() {
+  try {
+    if (document.fullscreenElement === elEscenario) {
+      await document.exitFullscreen();
+    } else {
+      await elEscenario.requestFullscreen();
+    }
+  } catch {
+    // Pantalla completa rechazada por el navegador
+  }
 }
 
 // --- Eventos ---
 
-btnCamara.addEventListener('click', () => {
-  if (camara.activa) {
+function manejarClickCamara() {
+  if (camara.fase === 'activa') {
     detenerCamara();
   } else {
     iniciarCamara();
   }
-});
+}
 
+btnCamara.addEventListener('click', manejarClickCamara);
+btnCamaraEscenario.addEventListener('click', iniciarCamara);
+btnCancelarCarga.addEventListener('click', () => detenerCamara());
 btnArduino.addEventListener('click', conectarArduino);
 
-// Estado inicial de Web Serial al cargar la página
-actualizarEstado(estadoSimulado());
+if (document.fullscreenEnabled) {
+  btnPantalla.hidden = false;
+  btnPantalla.addEventListener('click', alternarPantallaCompleta);
+  document.addEventListener('fullscreenchange', actualizarBotonPantalla);
+}
+
+window.addEventListener('resize', () => {
+  if (camara.fase === 'activa') {
+    sincronizarTamanoCanvas();
+  }
+});
+
+// Estado inicial
+renderizarHardware();
+renderizarEscenario();
+renderizarConteo(null);
