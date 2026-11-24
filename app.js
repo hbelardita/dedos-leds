@@ -7,10 +7,10 @@ const MODELO_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmar
 const PARES_DEDOS = [[8, 6], [12, 10], [16, 14], [20, 18]];
 const LEDS_CONFIG = [
   { pin: 2, nombre: 'azul' },
-  { pin: 3, nombre: 'blanco' },
+  { pin: 3, nombre: 'amarillo' },
   { pin: 4, nombre: 'rojo' },
-  { pin: 5, nombre: 'blanco' },
-  { pin: 6, nombre: 'azul' },
+  { pin: 5, nombre: 'verde' },
+  { pin: 6, nombre: 'verde' },
 ];
 const FRAMES_ESTABLES = 4;
 
