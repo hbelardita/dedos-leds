@@ -5,14 +5,6 @@ import { FilesetResolver, HandLandmarker } from 'https://cdn.jsdelivr.net/npm/@m
 const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/wasm';
 const MODELO_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const PARES_DEDOS = [[8, 6], [12, 10], [16, 14], [20, 18]];
-const CONEXIONES_MANO = [
-  [0, 1], [1, 2], [2, 3], [3, 4],
-  [0, 5], [5, 6], [6, 7], [7, 8],
-  [5, 9], [9, 10], [10, 11], [11, 12],
-  [9, 13], [13, 14], [14, 15], [15, 16],
-  [13, 17], [17, 18], [18, 19], [19, 20],
-  [0, 17],
-];
 const LEDS_CONFIG = [
   { pin: 2, nombre: 'azul' },
   { pin: 3, nombre: 'blanco' },
@@ -52,8 +44,6 @@ const arduino = {
 // Referencias del DOM
 const elEscenario = document.getElementById('escenario');
 const elVideo = document.getElementById('video');
-const elCapaMano = document.getElementById('capa-mano');
-const ctxMano = elCapaMano.getContext('2d');
 const elMarcadorCamara = document.getElementById('marcador-camara');
 const elInicioTitulo = document.getElementById('inicio-titulo');
 const elInicioDescripcion = document.getElementById('inicio-descripcion');
@@ -78,14 +68,12 @@ const btnPantalla = document.getElementById('btn-pantalla');
 
 // --- Lógica pura de detección ---
 
-function analizarDedos(landmarks, mano) {
-  const puntasActivas = new Set();
+function contarDedos(landmarks, mano) {
   let total = 0;
 
   for (const [punta, media] of PARES_DEDOS) {
     if (landmarks[punta].y < landmarks[media].y) {
       total += 1;
-      puntasActivas.add(punta);
     }
   }
 
@@ -95,10 +83,9 @@ function analizarDedos(landmarks, mano) {
 
   if (pulgarArriba) {
     total += 1;
-    puntasActivas.add(4);
   }
 
-  return { total, puntasActivas };
+  return total;
 }
 
 function estabilizarConteo(valorCrudo) {
@@ -123,75 +110,6 @@ function reiniciarEstabilizador() {
   estabilizador.ultimoAnunciado = undefined;
 }
 
-// --- Dibujo de puntos de mano sobre el video ---
-
-function limpiarCapaMano() {
-  if (!ctxMano) return;
-  ctxMano.clearRect(0, 0, elCapaMano.width, elCapaMano.height);
-}
-
-function sincronizarTamanoCanvas() {
-  const rect = elEscenario.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const ancho = Math.max(1, Math.round(rect.width * dpr));
-  const alto = Math.max(1, Math.round(rect.height * dpr));
-  if (elCapaMano.width !== ancho || elCapaMano.height !== alto) {
-    elCapaMano.width = ancho;
-    elCapaMano.height = alto;
-  }
-  return { ancho: rect.width, alto: rect.height, dpr };
-}
-
-function dibujarMano(landmarks, puntasActivas) {
-  if (!ctxMano) return;
-  const { ancho, alto, dpr } = sincronizarTamanoCanvas();
-  ctxMano.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctxMano.clearRect(0, 0, ancho, alto);
-
-  if (!landmarks || !elVideo.videoWidth || !elVideo.videoHeight) {
-    return;
-  }
-
-  const escala = Math.max(ancho / elVideo.videoWidth, alto / elVideo.videoHeight);
-  const videoRenderW = elVideo.videoWidth * escala;
-  const videoRenderH = elVideo.videoHeight * escala;
-  const offsetX = (ancho - videoRenderW) / 2;
-  const offsetY = (alto - videoRenderH) / 2;
-
-  const proyectar = (punto) => ({
-    x: offsetX + (1 - punto.x) * videoRenderW,
-    y: offsetY + punto.y * videoRenderH,
-  });
-
-  const puntos = landmarks.map(proyectar);
-
-  ctxMano.lineWidth = 2;
-  ctxMano.strokeStyle = 'rgba(243, 245, 248, 0.42)';
-  ctxMano.beginPath();
-  for (const [a, b] of CONEXIONES_MANO) {
-    ctxMano.moveTo(puntos[a].x, puntos[a].y);
-    ctxMano.lineTo(puntos[b].x, puntos[b].y);
-  }
-  ctxMano.stroke();
-
-  for (let i = 0; i < puntos.length; i++) {
-    const p = puntos[i];
-    const esPuntaActiva = puntasActivas.has(i);
-    ctxMano.beginPath();
-    ctxMano.arc(p.x, p.y, esPuntaActiva ? 6.5 : 3, 0, Math.PI * 2);
-    if (esPuntaActiva) {
-      ctxMano.fillStyle = '#60a5fa';
-      ctxMano.fill();
-      ctxMano.lineWidth = 2;
-      ctxMano.strokeStyle = '#ffffff';
-      ctxMano.stroke();
-    } else {
-      ctxMano.fillStyle = 'rgba(243, 245, 248, 0.72)';
-      ctxMano.fill();
-    }
-  }
-}
-
 // --- Renderizado de estado (hardware y detección desacoplados) ---
 
 function arduinoIniciando() {
@@ -200,7 +118,7 @@ function arduinoIniciando() {
 
 function renderizarHardware() {
   let nivel = 'simulado';
-  let texto = 'Modo simulado';
+  let texto = 'Solo en pantalla';
 
   if (arduino.error) {
     nivel = 'error';
@@ -216,7 +134,7 @@ function renderizarHardware() {
     texto = 'Arduino conectado';
   } else if (!arduino.soportado) {
     nivel = 'no-soportado';
-    texto = 'Modo simulado · USB disponible en Chrome o Edge';
+    texto = 'Solo en pantalla · USB en Chrome o Edge';
   }
 
   elEstadoHardware.dataset.nivel = nivel;
@@ -287,7 +205,7 @@ function renderizarEscenario(mensajeError = null) {
 
   if (camara.fase === 'apagada') {
     elInicioTitulo.textContent = 'Mostrá tu mano para encender los 5 LEDs';
-    elInicioDescripcion.textContent = 'Levantá de 0 a 5 dedos frente a la cámara. Funciona en modo simulado o conectado a un Arduino Uno por USB.';
+    elInicioDescripcion.textContent = 'Levantá de 0 a 5 dedos frente a la cámara. Funciona en pantalla o con un Arduino conectado por USB.';
     btnCamaraEscenarioTexto.textContent = 'Iniciar cámara';
   } else if (camara.fase === 'error' && mensajeError) {
     elInicioTitulo.textContent = mensajeError.titulo;
@@ -346,7 +264,7 @@ function renderizarConteo(estable) {
     unidad.dataset.active = String(activo);
     if (svg) {
       svg.dataset.active = String(activo);
-      svg.setAttribute('aria-label', `LED ${indice + 1} pin ${info.pin} ${info.nombre} ${estadoTexto}`);
+      svg.setAttribute('aria-label', `LED ${indice + 1} ${info.nombre} ${estadoTexto}`);
     }
   });
 
@@ -405,7 +323,7 @@ async function desconectarArduino(mensajeError = null) {
 }
 
 function manejarDesconexionPuerto() {
-  desconectarArduino('Arduino desconectado. Volvió a modo simulado.');
+  desconectarArduino('Arduino desconectado. Volvió a solo en pantalla.');
 }
 
 async function conectarArduino() {
@@ -492,7 +410,6 @@ function detenerCamara({ faseFinal = 'apagada', mensajeError = null } = {}) {
   camara.fase = faseFinal;
   camara.ultimoTiempoVideo = -1;
   reiniciarEstabilizador();
-  limpiarCapaMano();
   renderizarConteo(null);
   enviarArduino(0);
   renderizarEscenario(mensajeError);
@@ -594,21 +511,19 @@ function hayFrameNuevo() {
     && elVideo.currentTime !== camara.ultimoTiempoVideo;
 }
 
-function detectarMano(ahoraMs) {
+function detectarDedos(ahoraMs) {
   const resultado = camara.detector.detectForVideo(elVideo, ahoraMs);
   const landmarks = resultado.landmarks?.[0];
   if (!landmarks) {
-    return { conteo: null, landmarks: null, puntasActivas: null };
+    return null;
   }
   const mano = resultado.handedness?.[0]?.[0]?.categoryName || 'Right';
-  const { total, puntasActivas } = analizarDedos(landmarks, mano);
-  return { conteo: total, landmarks, puntasActivas };
+  return contarDedos(landmarks, mano);
 }
 
 function procesarFrame(ahoraMs) {
   camara.ultimoTiempoVideo = elVideo.currentTime;
-  const { conteo, landmarks, puntasActivas } = detectarMano(ahoraMs);
-  dibujarMano(landmarks, puntasActivas);
+  const conteo = detectarDedos(ahoraMs);
   const estable = estabilizarConteo(conteo);
   renderizarConteo(estable);
   enviarArduino(estable ?? 0);
@@ -665,12 +580,6 @@ if (document.fullscreenEnabled) {
   btnPantalla.addEventListener('click', alternarPantallaCompleta);
   document.addEventListener('fullscreenchange', actualizarBotonPantalla);
 }
-
-window.addEventListener('resize', () => {
-  if (camara.fase === 'activa') {
-    sincronizarTamanoCanvas();
-  }
-});
 
 // Estado inicial
 renderizarHardware();

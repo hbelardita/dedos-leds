@@ -13,7 +13,7 @@
         <h1>Dedos y LEDs</h1>
         <p id="estado-hardware" class="telemetria-hardware" data-nivel="simulado" role="status" aria-live="polite">
           <span class="punto-estado" aria-hidden="true"></span>
-          <span id="estado-hardware-texto">Modo simulado</span>
+          <span id="estado-hardware-texto">Solo en pantalla</span>
         </p>
       </div>
 
@@ -44,12 +44,11 @@
 
     <section id="escenario" class="escenario" data-fase="apagada" aria-label="Escenario interactivo de cámara y LEDs">
       <video id="video" playsinline muted></video>
-      <canvas id="capa-mano" class="capa-mano" aria-hidden="true"></canvas>
 
       <div id="marcador-camara" class="capa-escenario">
         <div class="inicio-contenido">
           <h2 id="inicio-titulo">Mostrá tu mano para encender los 5 LEDs</h2>
-          <p id="inicio-descripcion">Levantá de 0 a 5 dedos frente a la cámara. Funciona en modo simulado o conectado a un Arduino Uno por USB.</p>
+          <p id="inicio-descripcion">Levantá de 0 a 5 dedos frente a la cámara. Funciona en pantalla o con un Arduino conectado por USB.</p>
           <div class="inicio-acciones">
             <button type="button" id="btn-camara-escenario" class="boton primario grande">
               <svg class="icono" viewBox="0 0 24 24" aria-hidden="true">
@@ -80,76 +79,56 @@
       <p id="anuncio-conteo" class="sr-only" aria-live="polite" aria-atomic="true"></p>
 
       <div class="riel-leds">
-        <div id="fila-leds" class="fila-leds" role="group" aria-label="Cinco LEDs virtuales en pines 2 a 6">
-          <figure class="led-unidad" data-active="false" style="--led-color: #3b82f6">
-            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 1 pin 2 azul apagado">
+        <div id="fila-leds" class="fila-leds" role="group" aria-label="Cinco LEDs virtuales">
+          <div class="led-unidad" data-active="false" style="--led-color: #3b82f6">
+            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 1 azul apagado">
               <line class="led-pata" x1="25" y1="50" x2="25" y2="84" />
               <line class="led-pata" x1="39" y1="50" x2="39" y2="84" />
               <path class="led-cuerpo" d="M16 43 V25 A16 16 0 0 1 48 25 V43 Z" />
               <rect class="led-base" x="12" y="43" width="40" height="7" rx="2" />
               <path class="led-brillo" d="M22 38 V25 A10 10 0 0 1 32 15" />
             </svg>
-            <figcaption class="led-etiqueta">
-              <span class="led-pin">P2</span>
-              <span class="led-color-nombre">Azul</span>
-            </figcaption>
-          </figure>
+          </div>
 
-          <figure class="led-unidad" data-active="false" style="--led-color: #f8fafc">
-            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 2 pin 3 blanco apagado">
+          <div class="led-unidad" data-active="false" style="--led-color: #f8fafc">
+            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 2 blanco apagado">
               <line class="led-pata" x1="25" y1="50" x2="25" y2="84" />
               <line class="led-pata" x1="39" y1="50" x2="39" y2="84" />
               <path class="led-cuerpo" d="M16 43 V25 A16 16 0 0 1 48 25 V43 Z" />
               <rect class="led-base" x="12" y="43" width="40" height="7" rx="2" />
               <path class="led-brillo" d="M22 38 V25 A10 10 0 0 1 32 15" />
             </svg>
-            <figcaption class="led-etiqueta">
-              <span class="led-pin">P3</span>
-              <span class="led-color-nombre">Blanco</span>
-            </figcaption>
-          </figure>
+          </div>
 
-          <figure class="led-unidad" data-active="false" style="--led-color: #ef4444">
-            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 3 pin 4 rojo apagado">
+          <div class="led-unidad" data-active="false" style="--led-color: #ef4444">
+            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 3 rojo apagado">
               <line class="led-pata" x1="25" y1="50" x2="25" y2="84" />
               <line class="led-pata" x1="39" y1="50" x2="39" y2="84" />
               <path class="led-cuerpo" d="M16 43 V25 A16 16 0 0 1 48 25 V43 Z" />
               <rect class="led-base" x="12" y="43" width="40" height="7" rx="2" />
               <path class="led-brillo" d="M22 38 V25 A10 10 0 0 1 32 15" />
             </svg>
-            <figcaption class="led-etiqueta">
-              <span class="led-pin">P4</span>
-              <span class="led-color-nombre">Rojo</span>
-            </figcaption>
-          </figure>
+          </div>
 
-          <figure class="led-unidad" data-active="false" style="--led-color: #f8fafc">
-            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 4 pin 5 blanco apagado">
+          <div class="led-unidad" data-active="false" style="--led-color: #f8fafc">
+            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 4 blanco apagado">
               <line class="led-pata" x1="25" y1="50" x2="25" y2="84" />
               <line class="led-pata" x1="39" y1="50" x2="39" y2="84" />
               <path class="led-cuerpo" d="M16 43 V25 A16 16 0 0 1 48 25 V43 Z" />
               <rect class="led-base" x="12" y="43" width="40" height="7" rx="2" />
               <path class="led-brillo" d="M22 38 V25 A10 10 0 0 1 32 15" />
             </svg>
-            <figcaption class="led-etiqueta">
-              <span class="led-pin">P5</span>
-              <span class="led-color-nombre">Blanco</span>
-            </figcaption>
-          </figure>
+          </div>
 
-          <figure class="led-unidad" data-active="false" style="--led-color: #3b82f6">
-            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 5 pin 6 azul apagado">
+          <div class="led-unidad" data-active="false" style="--led-color: #3b82f6">
+            <svg class="led" viewBox="0 0 64 88" role="img" data-active="false" aria-label="LED 5 azul apagado">
               <line class="led-pata" x1="25" y1="50" x2="25" y2="84" />
               <line class="led-pata" x1="39" y1="50" x2="39" y2="84" />
               <path class="led-cuerpo" d="M16 43 V25 A16 16 0 0 1 48 25 V43 Z" />
               <rect class="led-base" x="12" y="43" width="40" height="7" rx="2" />
               <path class="led-brillo" d="M22 38 V25 A10 10 0 0 1 32 15" />
             </svg>
-            <figcaption class="led-etiqueta">
-              <span class="led-pin">P6</span>
-              <span class="led-color-nombre">Azul</span>
-            </figcaption>
-          </figure>
+          </div>
         </div>
       </div>
     </section>
